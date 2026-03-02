@@ -1,0 +1,84 @@
+workflows:
+  ios-livecontainer-unsigned:
+    name: iOS Unsigned IPA (LiveContainer) - calx
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    environment:
+      flutter: stable
+      xcode: latest
+
+    scripts:
+      - name: Sanity check (repo root)
+        script: |
+          set -e
+          echo "PWD: $(pwd)"
+          ls -la
+          test -f pubspec.yaml
+          test -d lib
+          test -d ios_overrides
+
+      - name: Flutter pub get
+        script: |
+          set -e
+          flutter pub get
+
+      - name: Generate iOS scaffold (Swift) + inject overrides
+        script: |
+          set -e
+          rm -rf ios
+          flutter create . --platforms=ios --ios-language swift
+
+          # Inject native overrides
+          cp -f ios_overrides/AppDelegate.swift ios/Runner/AppDelegate.swift
+          cp -f ios_overrides/Info.plist ios/Runner/Info.plist
+
+          # Ensure Podfile exists (some environments don't auto-create it)
+          if [ ! -f ios/Podfile ]; then
+            cp -f ios_overrides/Podfile ios/Podfile
+          fi
+
+          test -f ios/Podfile
+          echo "Podfile OK"
+
+      - name: Install CocoaPods (force lockfile)
+        script: |
+          set -e
+          cd ios
+          rm -f Podfile.lock
+          pod install --repo-update
+          test -f Podfile.lock
+          test -f Pods/Manifest.lock
+          cd ..
+
+      - name: Build Unsigned .app (xcodebuild archive, signing OFF)
+        script: |
+          set -e
+          mkdir -p build/ios/archive
+
+          xcodebuild             -workspace ios/Runner.xcworkspace             -scheme Runner             -configuration Release             -sdk iphoneos             -archivePath build/ios/archive/Runner.xcarchive             archive             CODE_SIGNING_ALLOWED=NO             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_IDENTITY=""             PROVISIONING_PROFILE_SPECIFIER=""             DEVELOPMENT_TEAM=""
+
+      - name: Package Unsigned IPA (Payload zip)
+        script: |
+          set -e
+          mkdir -p build/ios/ipa
+
+          APP_PATH="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Runner.app not found at: $APP_PATH"
+            ls -R build/ios/archive || true
+            exit 1
+          fi
+
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/Runner.app
+
+          cd Payload
+          zip -r ../build/ios/ipa/calx.ipa .
+          cd ..
+          rm -rf Payload
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - build/ios/archive/Runner.xcarchive
